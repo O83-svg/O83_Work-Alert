@@ -751,7 +751,6 @@ async function saveToSheet() {
 
   const payload = {
     action: 'submitSchedule',
-    saveOnly: true,        // ← ไม่ส่ง LINE
     round,
     date: `${targetDate.getDate()}/${targetDate.getMonth()+1}/${targetDate.getFullYear()+543}`,
     dateObj: targetDate.toISOString(),
