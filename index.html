@@ -159,7 +159,9 @@ body {
   background: var(--white);
   border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 .preview-header {
   padding: 10px 14px;
@@ -168,7 +170,7 @@ body {
   display: flex; align-items: center; gap: 6px;
 }
 .preview-header svg { width: 14px; height: 14px; opacity: 0.6; }
-canvas#tbl { width: 100%; display: block; }
+canvas#tbl { width: 100%; max-width: none; display: block; }
 
 /* ── FOOTER ── */
 .footer {
@@ -288,6 +290,38 @@ function initState() {
 // ══════════════════════════════════════════════
 //  LOAD STAFF FROM GOOGLE SHEET (via GAS)
 // ══════════════════════════════════════════════
+
+function loadStaffJsonp() {
+  return new Promise((resolve, reject) => {
+    const callbackName = 'jsonp_getStaff_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+    let script;
+
+    function cleanup() {
+      if (script && script.parentNode) script.parentNode.removeChild(script);
+      try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
+      clearTimeout(timer);
+    }
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('โหลดรายชื่อไม่ได้: การเชื่อมต่อ Apps Script ใช้เวลานานเกินไป'));
+    }, 15000);
+
+    window[callbackName] = (data) => {
+      cleanup();
+      resolve(data);
+    };
+
+    script = document.createElement('script');
+    script.src = `${GAS_URL}?action=getStaff&callback=${encodeURIComponent(callbackName)}&_=${Date.now()}`;
+    script.onerror = () => {
+      cleanup();
+      reject(new Error('โหลดรายชื่อไม่ได้: เรียก Apps Script ไม่สำเร็จ'));
+    };
+    document.body.appendChild(script);
+  });
+}
+
 async function loadStaff() {
   const container = document.getElementById('staff-list');
   container.innerHTML = `
@@ -298,8 +332,7 @@ async function loadStaff() {
     </div>`;
 
   try {
-    const res  = await fetch(`${GAS_URL}?action=getStaff`);
-    const data = await res.json();
+    const data = await loadStaffJsonp();
     if (!data.success) throw new Error(data.error || 'โหลดข้อมูลไม่ได้');
 
     STAFF = data.staff;
@@ -313,7 +346,7 @@ async function loadStaff() {
     container.innerHTML = `
       <div style="margin:12px;background:#FFF3E0;border:1px solid #FFCC80;border-radius:12px;padding:20px 16px">
         <div style="font-size:16px;font-weight:700;color:#E65100;margin-bottom:8px">⚠️ โหลดรายชื่อไม่ได้</div>
-        <div style="font-size:13px;color:#BF360C;line-height:1.6">${err.message}</div>
+        <div style="font-size:13px;color:#BF360C;line-height:1.6">${err.message}<br>ตรวจสอบว่า Web App Deploy เป็น Anyone และ URL เป็น /exec เวอร์ชันล่าสุด</div>
       </div>`;
   }
 }
@@ -443,11 +476,79 @@ function setRemark(nick, val) {
 // ══════════════════════════════════════════════
 function drawCanvas() {
   const canvas = document.getElementById('tbl');
-  const NOTE_W = 90;
-  const W = Math.min(canvas.parentElement.offsetWidth, 700);
+
+  // ✅ FIX: ขยายรูปตารางจริงให้กว้างขึ้น เพื่อให้ช่องหมายเหตุไม่ถูกบีบ
+  // รูปที่ส่งเข้า LINE จะใช้ขนาดนี้ แม้หน้า Preview จะเลื่อนซ้าย-ขวาได้
+  const TABLE_W = 1180;
+  const W = Math.max(TABLE_W, canvas.parentElement.offsetWidth || TABLE_W);
   const SCALE = 2;
-  const ROW = 36, HEAD_H = 52, TOP_H = 46, PAD_BOT = 16;
-  const H = TOP_H + HEAD_H + ROW * STAFF.length + PAD_BOT;
+
+  const NOTE_W = 300;     // ✅ เดิม 90: ทำให้หมายเหตุโดนตัด
+  const BASE_ROW = 42;    // ✅ เพิ่มความสูงแถวเล็กน้อย
+  const NOTE_LINE_H = 14;
+  const HEAD_H = 52, TOP_H = 46, PAD_BOT = 16;
+
+  const N_COLS = SHIFTS.length;
+  const INFO_MIN_W = 230;
+  const COL_W  = Math.floor((W - NOTE_W - INFO_MIN_W) / N_COLS);
+  const INFO_W = W - COL_W * N_COLS - NOTE_W;
+
+  // ─ Helpers: ตัดบรรทัดหมายเหตุแบบไม่ตัดทิ้ง ─
+  function wrapTextLines(ctx, text, maxWidth) {
+    const raw = String(text || '').replace(/\r/g, '').trim();
+    if (!raw) return [];
+
+    const lines = [];
+    raw.split('\n').forEach(paragraph => {
+      const parts = paragraph.split(/(\s+)/).filter(Boolean);
+      let line = '';
+
+      parts.forEach(part => {
+        const test = line + part;
+        if (ctx.measureText(test).width <= maxWidth) {
+          line = test;
+          return;
+        }
+
+        if (line) {
+          lines.push(line.trim());
+          line = '';
+        }
+
+        // ถ้าข้อความภาษาไทย/คำยาวไม่มีเว้นวรรค ให้ตัดตามตัวอักษรเพื่อขึ้นบรรทัดใหม่
+        let chunk = '';
+        Array.from(part).forEach(ch => {
+          const testChunk = chunk + ch;
+          if (ctx.measureText(testChunk).width <= maxWidth) {
+            chunk = testChunk;
+          } else {
+            if (chunk) lines.push(chunk);
+            chunk = ch;
+          }
+        });
+        line = chunk;
+      });
+
+      if (line) lines.push(line.trim());
+    });
+
+    return lines;
+  }
+
+  const measureCanvas = document.createElement('canvas');
+  const mx = measureCanvas.getContext('2d');
+  mx.font = `10px 'Sarabun', sans-serif`;
+
+  const noteLinesByRow = STAFF.map(s => {
+    const st = state[s.nick] || {};
+    return wrapTextLines(mx, st.remark || '', NOTE_W - 14);
+  });
+
+  const rowHeights = noteLinesByRow.map(lines =>
+    Math.max(BASE_ROW, lines.length ? (lines.length * NOTE_LINE_H + 14) : BASE_ROW)
+  );
+  const totalRowsH = rowHeights.reduce((sum, h) => sum + h, 0);
+  const H = TOP_H + HEAD_H + totalRowsH + PAD_BOT;
 
   canvas.width  = W * SCALE;
   canvas.height = H * SCALE;
@@ -456,10 +557,6 @@ function drawCanvas() {
 
   const cx = canvas.getContext('2d');
   cx.scale(SCALE, SCALE);
-
-  const N_COLS = SHIFTS.length;
-  const COL_W  = Math.floor((W - NOTE_W - 204) / N_COLS);
-  const INFO_W = W - COL_W * N_COLS - NOTE_W;
 
   // ─ BG ─
   cx.fillStyle = '#FFFFFF';
@@ -475,25 +572,39 @@ function drawCanvas() {
   cx.fillStyle = '#FFFFFF';
   cx.font = `bold 12px 'Sarabun', sans-serif`;
   cx.textAlign = 'left';
+  cx.textBaseline = 'alphabetic';
   cx.fillText(PROJECT_NAME, 10, 18);
   cx.font = `10px 'Sarabun', sans-serif`;
   cx.fillStyle = 'rgba(255,255,255,0.85)';
   const roundLabel = round === 'eve' ? 'แจ้งรอบเย็น' : 'แจ้งรอบเช้า (มีการเปลี่ยนแปลง)';
   cx.fillText(`ประจำ${thDate(getTargetDate())}  ·  ${roundLabel}`, 10, 34);
 
-  // ─ SHIFT HEADER ─
+  // ─ HEADER BG ─
   cx.fillStyle = '#E8F5E9';
-  cx.fillRect(INFO_W, TOP_H, W - INFO_W, HEAD_H);
+  cx.fillRect(0, TOP_H, W, HEAD_H);
 
+  // INFO column headers
+  cx.fillStyle = '#1B5E20';
+  cx.font = `bold 10px 'Sarabun', sans-serif`;
+  cx.textAlign = 'left';
+  const colDefs = [{label:'ลำดับ',w:30},{label:'ชื่อ',w:94},{label:'ชื่อเล่น',w:56}];
+  let cxPos = 4;
+  colDefs.forEach(c => {
+    cx.fillText(c.label, cxPos, TOP_H + HEAD_H/2 + 4);
+    cxPos += c.w;
+  });
+  cx.fillText('ตำแหน่ง', cxPos, TOP_H + HEAD_H/2 + 4);
+
+  // SHIFT headers
   SHIFTS.forEach((sh, i) => {
     const x = INFO_W + COL_W * i;
     const [s, e] = sh.split('-');
     cx.fillStyle = '#1B5E20';
-    cx.font = `bold 9px 'Sarabun', sans-serif`;
+    cx.font = `bold 10px 'Sarabun', sans-serif`;
     cx.textAlign = 'center';
     cx.fillText(s, x + COL_W/2, TOP_H + 16);
     cx.fillStyle = '#2E7D52';
-    cx.font = `9px 'Sarabun', sans-serif`;
+    cx.font = `10px 'Sarabun', sans-serif`;
     cx.fillText(e, x + COL_W/2, TOP_H + 28);
     cx.fillStyle = '#666';
     cx.font = `8px 'Sarabun', sans-serif`;
@@ -502,34 +613,20 @@ function drawCanvas() {
 
   // NOTE column header
   const noteColX = INFO_W + COL_W * N_COLS;
-  cx.fillStyle = '#E8F5E9';
-  cx.fillRect(noteColX, TOP_H, NOTE_W, HEAD_H);
   cx.fillStyle = '#1B5E20';
-  cx.font = `bold 9px 'Sarabun', sans-serif`;
+  cx.font = `bold 11px 'Sarabun', sans-serif`;
   cx.textAlign = 'center';
   cx.fillText('หมายเหตุ', noteColX + NOTE_W/2, TOP_H + HEAD_H/2 + 4);
 
-  // INFO column headers
-  cx.fillStyle = '#E8F5E9';
-  cx.fillRect(0, TOP_H, INFO_W, HEAD_H);
-  cx.fillStyle = '#1B5E20';
-  cx.font = `bold 10px 'Sarabun', sans-serif`;
-  cx.textAlign = 'left';
-  const colDefs = [{label:'ลำดับ',w:28},{label:'ชื่อ',w:82},{label:'ชื่อเล่น',w:50}];
-  let cx_pos = 4;
-  colDefs.forEach(c => {
-    cx.fillText(c.label, cx_pos, TOP_H + HEAD_H/2 + 4);
-    cx_pos += c.w;
-  });
-  cx.fillText('ตำแหน่ง', cx_pos, TOP_H + HEAD_H/2 + 4);
-
   // ─ ROWS ─
+  let y = TOP_H + HEAD_H;
   STAFF.forEach((s, ri) => {
-    const y = TOP_H + HEAD_H + ROW * ri;
+    const rowH = rowHeights[ri];
+    const midY = y + rowH / 2;
     const st = state[s.nick];
 
     cx.fillStyle = ri % 2 === 0 ? '#F9FBF9' : '#FFFFFF';
-    cx.fillRect(0, y, W, ROW);
+    cx.fillRect(0, y, W, rowH);
 
     // row border
     cx.strokeStyle = '#E0E0E0';
@@ -538,68 +635,70 @@ function drawCanvas() {
 
     // info columns
     cx.fillStyle = '#333';
-    cx.font = `11px 'Sarabun', sans-serif`;
+    cx.font = `12px 'Sarabun', sans-serif`;
     cx.textAlign = 'center';
-    cx.fillText(ri + 1, 14, y + ROW/2 + 4);
+    cx.fillText(ri + 1, 15, midY + 4);
     cx.textAlign = 'left';
-    cx.font = `11px 'Sarabun', sans-serif`;
+    cx.font = `12px 'Sarabun', sans-serif`;
     cx.fillStyle = '#111';
-    cx.fillText(s.name, 32, y + ROW/2 + 4);
+    cx.fillText(s.name, 36, midY + 4);
     cx.fillStyle = '#555';
-    cx.font = `10px 'Sarabun', sans-serif`;
-    cx.fillText(s.nick, 114, y + ROW/2 + 4);
-    cx.fillText(s.pos,  164, y + ROW/2 + 4);
+    cx.font = `11px 'Sarabun', sans-serif`;
+    cx.fillText(s.nick, 130, midY + 4);
+    cx.fillText(s.pos,  186, midY + 4);
 
     // shift cells
     SHIFTS.forEach((sh, ci) => {
       const cellX = INFO_W + COL_W * ci;
       if (st.shift === sh) {
-        // เปลี่ยนสีเป็นส้มอ่อน และข้อความ "ทำงาน*" ถ้ามีการกดมาสายด้วย
-        cx.fillStyle = st.isLate ? '#FFE0B2' : '#C8E6C9'; 
-        cx.fillRect(cellX + 1, y + 1, COL_W - 2, ROW - 2);
+        cx.fillStyle = st.isLate ? '#FFE0B2' : '#C8E6C9';
+        cx.fillRect(cellX + 1, y + 1, COL_W - 2, rowH - 2);
         cx.fillStyle = st.isLate ? '#E65100' : '#1B5E20';
-        cx.font = `bold 10px 'Sarabun', sans-serif`;
+        cx.font = `bold 11px 'Sarabun', sans-serif`;
         cx.textAlign = 'center';
-        cx.fillText(st.isLate ? 'ทำงาน*' : 'ทำงาน', cellX + COL_W/2, y + ROW/2 + 4);
+        cx.fillText(st.isLate ? 'ทำงาน*' : 'ทำงาน', cellX + COL_W/2, midY + 4);
       }
       cx.strokeStyle = '#DDD'; cx.lineWidth = 0.5;
-      cx.strokeRect(cellX, y, COL_W, ROW);
+      cx.strokeRect(cellX, y, COL_W, rowH);
     });
 
-    // off/late overlay (ลบส่วนที่ถมสีมาสายทับทั้งแถวออกไป)
+    // off overlay
     if (st.shift === 'off') {
       cx.fillStyle = 'rgba(229,57,53,0.10)';
-      cx.fillRect(INFO_W, y, W - INFO_W - NOTE_W, ROW);
+      cx.fillRect(INFO_W, y, W - INFO_W - NOTE_W, rowH);
       const lbl = st.offType || 'หยุด/ลา';
       cx.fillStyle = '#C62828';
-      cx.font = `bold 10px 'Sarabun', sans-serif`;
+      cx.font = `bold 11px 'Sarabun', sans-serif`;
       cx.textAlign = 'center';
-      cx.fillText(lbl, INFO_W + (W - INFO_W - NOTE_W)/2, y + ROW/2 + 4);
+      cx.fillText(lbl, INFO_W + (W - INFO_W - NOTE_W)/2, midY + 4);
     }
 
-    // NOTE cell
+    // NOTE cell — ✅ แสดงเต็มด้วยการขึ้นบรรทัดใหม่ ไม่ตัดเป็น …
     const noteX = INFO_W + COL_W * N_COLS;
-    const remarkText = st.remark || '';
-    if (remarkText) {
+    const remarkLines = noteLinesByRow[ri];
+    if (remarkLines.length) {
       cx.fillStyle = '#FFF8E1';
-      cx.fillRect(noteX + 1, y + 1, NOTE_W - 2, ROW - 2);
-      cx.fillStyle = '#6D4C41';
-      cx.font = `9px 'Sarabun', sans-serif`;
+      cx.fillRect(noteX + 1, y + 1, NOTE_W - 2, rowH - 2);
+      cx.fillStyle = '#5D4037';
+      cx.font = `10px 'Sarabun', sans-serif`;
       cx.textAlign = 'left';
-      // truncate text ถ้ายาวเกิน
-      let txt = remarkText;
-      while (cx.measureText(txt).width > NOTE_W - 8 && txt.length > 1) txt = txt.slice(0, -1);
-      if (txt.length < remarkText.length) txt = txt.slice(0, -1) + '…';
-      cx.fillText(txt, noteX + 4, y + ROW/2 + 4);
+      cx.textBaseline = 'top';
+      const startY = y + Math.max(6, (rowH - remarkLines.length * NOTE_LINE_H) / 2);
+      remarkLines.forEach((line, idx) => {
+        cx.fillText(line, noteX + 7, startY + idx * NOTE_LINE_H);
+      });
+      cx.textBaseline = 'alphabetic';
     }
     cx.strokeStyle = '#DDD'; cx.lineWidth = 0.5;
-    cx.strokeRect(noteX, y, NOTE_W, ROW);
+    cx.strokeRect(noteX, y, NOTE_W, rowH);
+
+    y += rowH;
   });
 
   // ─ GRID LINES ─
   cx.strokeStyle = '#BBB'; cx.lineWidth = 0.5;
   let lineX = 0;
-  [28,82,50].forEach(w => {
+  [30,94,56].forEach(w => {
     lineX += w;
     cx.beginPath(); cx.moveTo(lineX, TOP_H); cx.lineTo(lineX, H); cx.stroke();
   });
@@ -608,7 +707,6 @@ function drawCanvas() {
     const x = INFO_W + COL_W * i;
     cx.beginPath(); cx.moveTo(x, TOP_H); cx.lineTo(x, H); cx.stroke();
   });
-  // NOTE column separator
   const noteLineX = INFO_W + COL_W * N_COLS;
   cx.beginPath(); cx.moveTo(noteLineX, TOP_H); cx.lineTo(noteLineX, H); cx.stroke();
 
