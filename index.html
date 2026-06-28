@@ -758,7 +758,7 @@ async function sendToLine() {
        let text = `${s.name} (${s.nick}) — กะ ${st.shift}`;
        if (st.isLate) text += ` (มาสาย${st.lateType ? ' - ' + st.lateType : ''})`;
        return text + remark;
-    }
+     }
     if (st.isLate) return `${s.name} (${s.nick}) — มาสาย (ยังไม่ระบุกะ)${remark}`;
     return `${s.name} (${s.nick}) — ยังไม่ระบุ${remark}`;
   });
@@ -788,10 +788,19 @@ async function sendToLine() {
 
   try {
     // ใช้ hidden form แทน fetch/no-cors เพื่อเลี่ยงปัญหา CORS/redirect ของ Google Apps Script
-    await postToGasViaHiddenForm(payload);
-    showToast('✅ ส่งคำสั่งไป Apps Script แล้ว — กรุณาตรวจ LINE Group');
+    const res = await postToGasViaHiddenForm(payload);
+    
+    // ตรวจสอบสถานะการส่ง LINE จากผลลัพธ์ที่ Apps Script ตอบกลับมา
+    if (res.lineTextStatus && (res.lineTextStatus.startsWith('ERROR') || !res.lineTextStatus.startsWith('200'))) {
+      showToast('⚠️ บันทึกตารางแล้ว แต่ส่ง LINE ไม่สำเร็จ: ' + res.lineTextStatus);
+      console.error('LINE send error:', res);
+    } else if (res.lineTextStatus === 'TIMEOUT_WAIT') {
+      showToast('⏳ บันทึกข้อมูลแล้ว (โปรดตรวจสอบ LINE Group อีกครั้ง)');
+    } else {
+      showToast('✅ บันทึกและส่งตารางเข้า LINE Group สำเร็จแล้ว!');
+    }
   } catch (e) {
-    showToast('⚠️ ส่งไม่สำเร็จ — ตรวจสอบ GAS_URL / Deploy Web App');
+    showToast('⚠️ ส่งไม่สำเร็จ: ' + e.message);
     console.error(e);
   } finally {
     btn.classList.remove('loading');
@@ -824,25 +833,41 @@ function postToGasViaHiddenForm(payload) {
     document.body.appendChild(form);
 
     function cleanup() {
+      window.removeEventListener('message', messageListener);
       setTimeout(() => {
         try { form.remove(); } catch (_) {}
         try { iframe.remove(); } catch (_) {}
       }, 500);
     }
 
-    iframe.onload = () => {
+    const messageListener = (event) => {
       if (finished) return;
-      finished = true;
-      cleanup();
-      resolve();
+      // ตรวจสอบว่ามีข้อมูลส่งมาจาก iframe ที่เกี่ยวกับผลการบันทึก
+      if (event.data && typeof event.data === 'object' && 'success' in event.data) {
+        finished = true;
+        clearTimeout(timer);
+        cleanup();
+        if (event.data.success) {
+          resolve(event.data);
+        } else {
+          reject(new Error(event.data.error || 'เกิดข้อผิดพลาดจาก Apps Script'));
+        }
+      }
     };
 
-    // บางครั้ง iframe load ไม่ยิง callback แม้ GAS ทำงานแล้ว จึงถือว่าส่งคำสั่งแล้วหลัง 15 วินาที
+    window.addEventListener('message', messageListener);
+
+    iframe.onload = () => {
+      // โหลด iframe เสร็จ แต่ยังไม่ได้รับการตอบกลับผ่าน postMessage
+    };
+
+    // บางครั้ง iframe load ไม่ยิง callback หรือไม่ส่ง message กลับ จึงมี fallback หลัง 15 วินาที
     const timer = setTimeout(() => {
       if (finished) return;
       finished = true;
       cleanup();
-      resolve();
+      // หากหมดเวลา แต่ไม่มีข้อมูลขัดข้อง (ไม่มี error) ให้ resolve ถือว่าส่งไปแล้ว
+      resolve({ success: true, lineTextStatus: 'TIMEOUT_WAIT', lineImageStatus: 'TIMEOUT_WAIT' });
     }, 15000);
 
     try {
