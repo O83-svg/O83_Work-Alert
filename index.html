@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>ตารางเข้างาน · ดิ ออริจิ้น ราม 83</title>
+<title>ตารางเข้างาน · ดิ ออริจิ้น ราม 83 · 200 chars</title>
 <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&family=Prompt:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -272,6 +272,7 @@ const SHIFTS = [
 ];
 const OFF_TYPES  = ['ลาป่วย','ลากิจ','หยุดพักร้อน','วันหยุดประจำสัปดาห์','วันหยุดชดเชย','ลาหยุดประจำวันเกิด'];
 const LATE_TYPES = ['มาสาย','ทำ OT'];
+const MAX_REMARK_CHARS = 200;
 
 let STAFF = [];
 
@@ -467,7 +468,8 @@ function pickLate(nick, t) {
 }
 
 function setRemark(nick, val) {
-  state[nick].remark = val;
+  const safeVal = String(val || '').slice(0, MAX_REMARK_CHARS);
+  state[nick].remark = safeVal;
   drawCanvas();
 }
 
@@ -477,19 +479,19 @@ function setRemark(nick, val) {
 function drawCanvas() {
   const canvas = document.getElementById('tbl');
 
-  // ✅ FIX: ขยายรูปตารางจริงให้กว้างขึ้น เพื่อให้ช่องหมายเหตุไม่ถูกบีบ
+  // ✅ FIX: ปรับรูปตารางให้พอดีขึ้น และให้หมายเหตุ 200 ตัวอักษรแสดงเต็มด้วยการขึ้นบรรทัดใหม่
   // รูปที่ส่งเข้า LINE จะใช้ขนาดนี้ แม้หน้า Preview จะเลื่อนซ้าย-ขวาได้
-  const TABLE_W = 1180;
+  const TABLE_W = 1400;
   const W = Math.max(TABLE_W, canvas.parentElement.offsetWidth || TABLE_W);
   const SCALE = 2;
 
-  const NOTE_W = 300;     // ✅ เดิม 90: ทำให้หมายเหตุโดนตัด
-  const BASE_ROW = 42;    // ✅ เพิ่มความสูงแถวเล็กน้อย
-  const NOTE_LINE_H = 14;
+  const NOTE_W = 360;     // ✅ ช่องหมายเหตุรองรับ 200 ตัวอักษร และขึ้นบรรทัดใหม่
+  const BASE_ROW = 46;    // ✅ เพิ่มความสูงแถวเล็กน้อย
+  const NOTE_LINE_H = 16;
   const HEAD_H = 52, TOP_H = 46, PAD_BOT = 16;
 
   const N_COLS = SHIFTS.length;
-  const INFO_MIN_W = 230;
+  const INFO_MIN_W = 300;
   const COL_W  = Math.floor((W - NOTE_W - INFO_MIN_W) / N_COLS);
   const INFO_W = W - COL_W * N_COLS - NOTE_W;
 
@@ -537,11 +539,11 @@ function drawCanvas() {
 
   const measureCanvas = document.createElement('canvas');
   const mx = measureCanvas.getContext('2d');
-  mx.font = `10px 'Sarabun', sans-serif`;
+  mx.font = `12px 'Sarabun', sans-serif`;
 
   const noteLinesByRow = STAFF.map(s => {
     const st = state[s.nick] || {};
-    return wrapTextLines(mx, st.remark || '', NOTE_W - 14);
+    return wrapTextLines(mx, st.remark || '', NOTE_W - 18);
   });
 
   const rowHeights = noteLinesByRow.map(lines =>
@@ -680,12 +682,12 @@ function drawCanvas() {
       cx.fillStyle = '#FFF8E1';
       cx.fillRect(noteX + 1, y + 1, NOTE_W - 2, rowH - 2);
       cx.fillStyle = '#5D4037';
-      cx.font = `10px 'Sarabun', sans-serif`;
+      cx.font = `12px 'Sarabun', sans-serif`;
       cx.textAlign = 'left';
       cx.textBaseline = 'top';
       const startY = y + Math.max(6, (rowH - remarkLines.length * NOTE_LINE_H) / 2);
       remarkLines.forEach((line, idx) => {
-        cx.fillText(line, noteX + 7, startY + idx * NOTE_LINE_H);
+        cx.fillText(line, noteX + 9, startY + idx * NOTE_LINE_H);
       });
       cx.textBaseline = 'alphabetic';
     }
@@ -732,37 +734,51 @@ function downloadImg() {
 //  SEND TO LINE (ผ่าน Google Apps Script)
 // ══════════════════════════════════════════════
 async function sendToLine() {
+  if (!STAFF.length) {
+    showToast('⚠️ ยังไม่มีรายชื่อพนักงาน');
+    return;
+  }
+
+  const ok = confirm('ยืนยันส่งตารางนี้เข้า LINE Group ใช่ไหม?');
+  if (!ok) return;
+
+  // วาดใหม่ก่อนส่ง เพื่อให้รูปตรงกับข้อมูลล่าสุด
+  drawCanvas();
+
   const canvas = document.getElementById('tbl');
   const imageBase64 = canvas.toDataURL('image/png').split(',')[1];
   const targetDate = getTargetDate();
 
-  // สร้าง summary text ส่งเข้าไลน์
   const lines = STAFF.map(s => {
     const st = state[s.nick];
-    if (st.shift === 'off') return `${s.name} (${s.nick}) — ${st.offType || 'หยุด/ลา'}`;
+    const safeRemark = (st.remark || '').slice(0, MAX_REMARK_CHARS);
+    const remark = safeRemark ? ` — หมายเหตุ: ${safeRemark}` : '';
+    if (st.shift === 'off') return `${s.name} (${s.nick}) — ${st.offType || 'หยุด/ลา'}${remark}`;
     if (st.shift) {
        let text = `${s.name} (${s.nick}) — กะ ${st.shift}`;
        if (st.isLate) text += ` (มาสาย${st.lateType ? ' - ' + st.lateType : ''})`;
-       return text;
+       return text + remark;
     }
-    if (st.isLate) return `${s.name} (${s.nick}) — มาสาย (ยังไม่ระบุกะ)`;
-    return `${s.name} (${s.nick}) — ยังไม่ระบุ`;
+    if (st.isLate) return `${s.name} (${s.nick}) — มาสาย (ยังไม่ระบุกะ)${remark}`;
+    return `${s.name} (${s.nick}) — ยังไม่ระบุ${remark}`;
   });
 
   const payload = {
+    action: 'submitSchedule',
     round,
     date: `${targetDate.getDate()}/${targetDate.getMonth()+1}/${targetDate.getFullYear()+543}`,
     dateObj: targetDate.toISOString(),
     projectName: PROJECT_NAME,
     summary: lines,
     imageBase64,
-    // อัปเดตข้อมูลส่งไป Google Sheet ให้สอดคล้องกัน
     staffData: STAFF.map(s => ({
-      name: s.name, nick: s.nick, pos: s.pos,
+      name: s.name,
+      nick: s.nick,
+      pos: s.pos,
       shift: state[s.nick].shift,
       offType: state[s.nick].offType,
       lateType: state[s.nick].isLate ? (state[s.nick].lateType || 'มาสาย') : null,
-      remark: state[s.nick].remark || ''
+      remark: (state[s.nick].remark || '').slice(0, MAX_REMARK_CHARS)
     }))
   };
 
@@ -771,21 +787,73 @@ async function sendToLine() {
   btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1s linear infinite"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg> กำลังส่ง...`;
 
   try {
-    // GAS redirect POST → ต้องใช้ no-cors (อ่าน response ไม่ได้ แต่ server ทำงานได้ปกติ)
-    await fetch(GAS_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      body: JSON.stringify(payload)
-    });
-    // no-cors = ถ้าไม่ throw = สำเร็จ
-    showToast('✅ ส่งเข้า LINE สำเร็จ!');
+    // ใช้ hidden form แทน fetch/no-cors เพื่อเลี่ยงปัญหา CORS/redirect ของ Google Apps Script
+    await postToGasViaHiddenForm(payload);
+    showToast('✅ ส่งคำสั่งไป Apps Script แล้ว — กรุณาตรวจ LINE Group');
   } catch (e) {
-    showToast('⚠️ เชื่อมต่อไม่ได้ — ตรวจสอบ GAS_URL');
+    showToast('⚠️ ส่งไม่สำเร็จ — ตรวจสอบ GAS_URL / Deploy Web App');
     console.error(e);
   } finally {
     btn.classList.remove('loading');
     btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> ส่งเข้า LINE Group`;
   }
+}
+
+function postToGasViaHiddenForm(payload) {
+  return new Promise((resolve, reject) => {
+    const iframeName = 'gas_post_iframe_' + Date.now();
+    let finished = false;
+
+    const iframe = document.createElement('iframe');
+    iframe.name = iframeName;
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = GAS_URL;
+    form.target = iframeName;
+    form.enctype = 'application/x-www-form-urlencoded';
+    form.acceptCharset = 'UTF-8';
+    form.style.display = 'none';
+
+    const field = document.createElement('textarea');
+    field.name = 'payload';
+    field.value = JSON.stringify(payload);
+    form.appendChild(field);
+    document.body.appendChild(form);
+
+    function cleanup() {
+      setTimeout(() => {
+        try { form.remove(); } catch (_) {}
+        try { iframe.remove(); } catch (_) {}
+      }, 500);
+    }
+
+    iframe.onload = () => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve();
+    };
+
+    // บางครั้ง iframe load ไม่ยิง callback แม้ GAS ทำงานแล้ว จึงถือว่าส่งคำสั่งแล้วหลัง 15 วินาที
+    const timer = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve();
+    }, 15000);
+
+    try {
+      form.submit();
+    } catch (err) {
+      clearTimeout(timer);
+      finished = true;
+      cleanup();
+      reject(err);
+    }
+  });
 }
 
 // ══════════════════════════════════════════════
