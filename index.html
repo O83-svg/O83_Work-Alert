@@ -247,9 +247,9 @@ canvas#tbl { width: 100%; max-width: none; display: block; }
   <button class="btn-icon" onclick="downloadImg()" title="บันทึกรูป">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
   </button>
-  <button class="btn-send" id="send-btn" onclick="sendToLine()">
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-    ส่งเข้า LINE Group
+  <button class="btn-send" id="send-btn" onclick="saveToSheet()">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+    บันทึกเข้า Google Sheet
   </button>
 </div>
 
@@ -733,43 +733,29 @@ function downloadImg() {
 // ══════════════════════════════════════════════
 //  SEND TO LINE (ผ่าน Google Apps Script)
 // ══════════════════════════════════════════════
-async function sendToLine() {
+async function saveToSheet() {
   if (!STAFF.length) {
     showToast('⚠️ ยังไม่มีรายชื่อพนักงาน');
     return;
   }
 
-  const ok = confirm('ยืนยันส่งตารางนี้เข้า LINE Group ใช่ไหม?');
+  const ok = confirm('ยืนยันบันทึกตารางนี้เข้า Google Sheet ใช่ไหม?');
   if (!ok) return;
 
-  // วาดใหม่ก่อนส่ง เพื่อให้รูปตรงกับข้อมูลล่าสุด
+  // วาดใหม่ก่อนบันทึก เพื่อให้รูปตรงกับข้อมูลล่าสุด
   drawCanvas();
 
   const canvas = document.getElementById('tbl');
   const imageBase64 = canvas.toDataURL('image/png').split(',')[1];
   const targetDate = getTargetDate();
 
-  const lines = STAFF.map(s => {
-    const st = state[s.nick];
-    const safeRemark = (st.remark || '').slice(0, MAX_REMARK_CHARS);
-    const remark = safeRemark ? ` — หมายเหตุ: ${safeRemark}` : '';
-    if (st.shift === 'off') return `${s.name} (${s.nick}) — ${st.offType || 'หยุด/ลา'}${remark}`;
-    if (st.shift) {
-       let text = `${s.name} (${s.nick}) — กะ ${st.shift}`;
-       if (st.isLate) text += ` (มาสาย${st.lateType ? ' - ' + st.lateType : ''})`;
-       return text + remark;
-     }
-    if (st.isLate) return `${s.name} (${s.nick}) — มาสาย (ยังไม่ระบุกะ)${remark}`;
-    return `${s.name} (${s.nick}) — ยังไม่ระบุ${remark}`;
-  });
-
   const payload = {
     action: 'submitSchedule',
+    saveOnly: true,        // ← ไม่ส่ง LINE
     round,
     date: `${targetDate.getDate()}/${targetDate.getMonth()+1}/${targetDate.getFullYear()+543}`,
     dateObj: targetDate.toISOString(),
     projectName: PROJECT_NAME,
-    summary: lines,
     imageBase64,
     staffData: STAFF.map(s => ({
       name: s.name,
@@ -784,27 +770,23 @@ async function sendToLine() {
 
   const btn = document.getElementById('send-btn');
   btn.classList.add('loading');
-  btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1s linear infinite"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg> กำลังส่ง...`;
+  btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1s linear infinite"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg> กำลังบันทึก...`;
 
   try {
-    // ใช้ hidden form แทน fetch/no-cors เพื่อเลี่ยงปัญหา CORS/redirect ของ Google Apps Script
     const res = await postToGasViaHiddenForm(payload);
-    
-    // ตรวจสอบสถานะการส่ง LINE จากผลลัพธ์ที่ Apps Script ตอบกลับมา
-    if (res.lineTextStatus && (res.lineTextStatus.startsWith('ERROR') || !res.lineTextStatus.startsWith('200'))) {
-      showToast('⚠️ บันทึกตารางแล้ว แต่ส่ง LINE ไม่สำเร็จ: ' + res.lineTextStatus);
-      console.error('LINE send error:', res);
-    } else if (res.lineTextStatus === 'TIMEOUT_WAIT') {
-      showToast('⏳ บันทึกข้อมูลแล้ว (โปรดตรวจสอบ LINE Group อีกครั้ง)');
+    if (res && res.success === false) {
+      showToast('⚠️ บันทึกไม่สำเร็จ: ' + (res.error || 'ไม่ทราบสาเหตุ'));
     } else {
-      showToast('✅ บันทึกและส่งตารางเข้า LINE Group สำเร็จแล้ว!');
+      showToast('✅ บันทึกเข้า Google Sheet สำเร็จ! กำลังดาวน์โหลดรูป...');
+      // ดาวน์โหลดรูปอัตโนมัติหลังบันทึกสำเร็จ
+      setTimeout(() => downloadImg(), 800);
     }
   } catch (e) {
-    showToast('⚠️ ส่งไม่สำเร็จ: ' + e.message);
+    showToast('⚠️ บันทึกไม่สำเร็จ: ' + e.message);
     console.error(e);
   } finally {
     btn.classList.remove('loading');
-    btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> ส่งเข้า LINE Group`;
+    btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> บันทึกเข้า Google Sheet`;
   }
 }
 
